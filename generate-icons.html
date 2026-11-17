@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Generate ServeCoach Icons</title>
+  <style>
+    body { font-family: system-ui; max-width: 800px; margin: 40px auto; padding: 20px; }
+    .size-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 16px; margin: 20px 0; }
+    .icon-preview { border: 1px solid #ddd; border-radius: 12px; padding: 16px; text-align: center; background: #fafafa; }
+    .icon-preview canvas { border: 1px solid #ccc; border-radius: 8px; background: white; max-width: 100%; }
+    .icon-preview label { display: block; margin-top: 8px; font-size: 12px; color: #666; }
+    button { padding: 12px 24px; font-size: 16px; background: #1a7f37; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #156b2e; }
+    .status { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; }
+    .status.success { display: block; background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status.error { display: block; background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  </style>
+</head>
+<body>
+  <h1>🎾 ServeCoach - Gerador de Ícones PWA</h1>
+  <p>Esta página converte o <code>icon.svg</code> em todos os tamanhos PNG necessários para o manifest.json.</p>
+
+  <button id="generate-btn">Gerar Todos os Ícones PNG</button>
+  <div class="status" id="status"></div>
+
+  <div class="size-grid" id="grid"></div>
+
+  <script>
+    const SIZES = [72, 96, 128, 144, 152, 192, 384, 512];
+    const svgUrl = 'icon.svg';
+
+    const grid = document.getElementById('grid');
+    const status = document.getElementById('status');
+    const btn = document.getElementById('generate-btn');
+
+    // Create preview placeholders
+    SIZES.forEach(size => {
+      const div = document.createElement('div');
+      div.className = 'icon-preview';
+      div.innerHTML = `
+        <canvas width="${size}" height="${size}" id="canvas-${size}"></canvas>
+        <label>${size}×${size}</label>
+      `;
+      grid.appendChild(div);
+    });
+
+    async function loadSVG() {
+      const response = await fetch(svgUrl);
+      const text = await response.text();
+      return text;
+    }
+
+    function renderSVGToCanvas(svgText, size, canvas) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const svgBlob = new Blob([svgText], {type: 'image/svg+xml'});
+        const url = URL.createObjectURL(svgBlob);
+
+        img.onload = () => {
+          const ctx = canvas.getContext('2d');
+          canvas.width = size;
+          canvas.height = size;
+
+          // White background for transparency handling
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, size, size);
+
+          ctx.drawImage(img, 0, 0, size, size);
+          URL.revokeObjectURL(url);
+          resolve(canvas);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to load SVG'));
+        };
+        img.src = url;
+      });
+    }
+
+    function canvasToPNG(canvas, filename) {
+      return new Promise((resolve) => {
+        canvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(url);
+          resolve();
+        }, 'image/png');
+      });
+    }
+
+    async function generateAll() {
+      btn.disabled = true;
+      btn.textContent = 'Gerando...';
+      status.className = 'status';
+      status.textContent = '';
+
+      try {
+        const svgText = await loadSVG();
+
+        for (const size of SIZES) {
+          const canvas = document.getElementById(`canvas-${size}`);
+          await renderSVGToCanvas(svgText, size, canvas);
+
+          // Auto-download
+          await canvasToPNG(canvas, `icon-${size}.png`);
+
+          // Small delay to avoid browser blocking multiple downloads
+          await new Promise(r => setTimeout(r, 100));
+        }
+
+        status.className = 'status success';
+        status.textContent = '✅ Todos os ícones gerados e baixados! Mova os arquivos icon-*.png para a pasta servecoach-pwa/';
+
+      } catch (err) {
+        status.className = 'status error';
+        status.textContent = '❌ Erro: ' + err.message;
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Gerar Todos os Ícones PNG';
+      }
+    }
+
+    btn.addEventListener('click', generateAll);
+  </script>
+</body>
+</html>
