@@ -3,24 +3,21 @@
  * Cache-first strategy for app shell, network-first for model assets
  */
 
-const CACHE_NAME = 'servecoach-v4';
-const MODEL_CACHE_NAME = 'servecoach-models-v4';
+const CACHE_NAME = 'servecoach-v5';
+const MODEL_CACHE_NAME = 'servecoach-models-v5';
 
 const APP_SHELL = [
-  '/',
-  '/index.html',
-  '/app.js',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
+  './',
+  './index.html',
+  './app.js',
+  './manifest.json',
 ];
 
 // Model assets from CDN (cached separately with longer TTL)
 const MODEL_ASSETS = [
-  'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.js',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm/wasm_exec.js',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm/vision_wasm_internal.wasm',
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs',
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/wasm_exec.js',
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/vision_wasm_internal.wasm',
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
 ];
 
@@ -67,11 +64,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // App shell - cache first
-  if (APP_SHELL.some(asset => request.url.endsWith(asset) || request.url === new URL(asset, self.location).href)) {
-    event.respondWith(cacheFirst(request));
-    return;
-  }
+  // App shell - network first (para as correções chegarem logo)
 
   // Other requests - network first, fallback to cache
   event.respondWith(networkFirst(request));
@@ -92,7 +85,7 @@ async function cacheFirst(request) {
   } catch (err) {
     // Return offline fallback for navigation
     if (request.mode === 'navigate') {
-      return cache.match('/index.html');
+      return cache.match('./index.html');
     }
     throw err;
   }
@@ -113,7 +106,7 @@ async function networkFirst(request) {
     if (cached) return cached;
 
     if (request.mode === 'navigate') {
-      return cache.match('/index.html');
+      return cache.match('./index.html');
     }
     throw err;
   }

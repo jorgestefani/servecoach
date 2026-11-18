@@ -754,34 +754,28 @@ async function initPoseDetector() {
   const startTime = Date.now();
 
   async function tryLoadModel(complexity) {
-    const {PoseDetector, FilesetResolver} = window;
-
-    if (!PoseDetector) {
-      // Load TensorFlow.js and MediaPipe with timeout
-      loadingText.textContent = 'Baixando TensorFlow.js...';
-      await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 20000);
-      loadingText.textContent = 'Baixando MediaPipe...';
-      await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.js', 20000);
-    }
+    loadingText.textContent = 'Baixando MediaPipe...';
+    const mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const {PoseLandmarker, FilesetResolver} = mp;
 
     loadingText.textContent = 'Carregando modelo WASM...';
     const vision = await FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
     );
 
     const modelNames = {
-      0: {file: 'pose_landmarker_lite.task', name: 'pose_landmarker_lite'},
-      1: {file: 'pose_landmarker_heavy.task', name: 'pose_landmarker_heavy'},
-      2: {file: 'pose_landmarker_full.task', name: 'pose_landmarker_full'},
+      0: 'pose_landmarker_lite',
+      1: 'pose_landmarker_heavy',
+      2: 'pose_landmarker_full',
     };
-    const model = modelNames[complexity] || modelNames[0];
+    const name = modelNames[complexity] || modelNames[0];
 
-    loadingText.textContent = `Baixando modelo ${model.name}... (${Math.round((Date.now()-startTime)/1000)}s)`;
+    loadingText.textContent = `Baixando modelo ${name}... (${Math.round((Date.now()-startTime)/1000)}s)`;
 
-    poseDetector = await PoseDetector.createFromOptions(vision, {
+    const opts = (delegate) => ({
       baseOptions: {
-        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${model.name}/float16/latest/${model.file}`,
-        delegate: 'GPU',
+        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${name}/float16/latest/${name}.task`,
+        delegate,
       },
       runningMode: 'VIDEO',
       numPoses: 1,
@@ -790,6 +784,26 @@ async function initPoseDetector() {
       minTrackingConfidence: CONFIG.minTrackingConfidence,
       outputSegmentationMasks: false,
     });
+    let landmarker;
+    try {
+      landmarker = await PoseLandmarker.createFromOptions(vision, opts('GPU'));
+    } catch (e) {
+      console.warn('GPU indisponível, usando CPU:', e.message);
+      landmarker = await PoseLandmarker.createFromOptions(vision, opts('CPU'));
+    }
+
+    // Adaptador: o resto do app espera estimatePoses() -> [{keypoints}]
+    let lastTs = 0;
+    poseDetector = {
+      landmarker,
+      async estimatePoses(videoEl) {
+        let ts = performance.now();
+        if (ts <= lastTs) ts = lastTs + 1;
+        lastTs = ts;
+        const r = landmarker.detectForVideo(videoEl, ts);
+        return (r.landmarks && r.landmarks.length) ? [{keypoints: r.landmarks[0]}] : [];
+      },
+    };
 
     return true;
   }
@@ -829,17 +843,6 @@ function loadScript(src) {
     script.src = src;
     script.onload = resolve;
     script.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(script);
-  });
-}
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const script = document.createElement('script');
-    script.src = src;
-    script.onload = resolve;
-    script.onerror = reject;
     document.head.appendChild(script);
   });
 }
