@@ -1195,6 +1195,13 @@ async function clearCacheAndReload() {
 
 // ============ INIT ============
 async function init() {
+  // Check for demo mode URL param (?demo=1)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('demo') === '1') {
+    enableDemoMode();
+    return;
+  }
+
   const loadingText = document.getElementById('loading-text');
   const skipBtn = document.getElementById('btn-skip-ai');
   const retryBtn = document.getElementById('btn-retry-load');
