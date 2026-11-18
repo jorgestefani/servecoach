@@ -337,6 +337,17 @@
   <div id="loading" class="loading-screen" role="status" aria-live="polite">
     <div class="spinner"></div>
     <div class="loading-text" id="loading-text">Carregando modelos de IA...</div>
+    <div style="margin-top:20px; display:flex; flex-direction:column; gap:10px; width:100%; max-width:280px;">
+      <button class="btn warn" id="btn-skip-ai" style="display:none;">
+        ⚡ Pular IA — Modo Demo (só câmera + cues manuais)
+      </button>
+      <button class="btn" id="btn-retry-load" style="display:none;">
+        🔄 Tentar novamente
+      </button>
+      <button class="btn" id="btn-clear-cache" style="display:none;">
+        🧹 Limpar cache e recarregar
+      </button>
+    </div>
   </div>
 
   <!-- Landscape Hint -->

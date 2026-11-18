@@ -631,7 +631,14 @@ function updateMetricsUI(pose) {
 
 // ============ MAIN LOOP ============
 async function mainLoop() {
-  if (!poseDetector || !video.readyState) {
+  if (!video.readyState) {
+    animationId = requestAnimationFrame(mainLoop);
+    return;
+  }
+
+  // Demo mode: just show camera, no pose detection
+  if (!poseDetector || demoMode) {
+    drawCameraOnly();
     animationId = requestAnimationFrame(mainLoop);
     return;
   }
@@ -662,6 +669,30 @@ async function mainLoop() {
   }
 
   animationId = requestAnimationFrame(mainLoop);
+}
+
+function drawCameraOnly() {
+  if (!ctx || !video.videoWidth) return;
+
+  const w = canvas.width = video.videoWidth;
+  const h = canvas.height = video.videoHeight;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.save();
+
+  if (CONFIG.mirrorVideo) {
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+  }
+
+  // Draw "Demo Mode" label
+  ctx.fillStyle = 'rgba(255,200,0,0.9)';
+  ctx.fillRect(10, 10, 200, 36);
+  ctx.fillStyle = '#000';
+  ctx.font = 'bold 16px system-ui';
+  ctx.fillText('⚡ MODO DEMO', 20, 35);
+
+  ctx.restore();
 }
 
 // ============ CAMERA SETUP ============
@@ -1135,9 +1166,53 @@ document.addEventListener('DOMContentLoaded', () => {
 window.addEventListener('resize', checkOrientation);
 window.addEventListener('orientationchange', checkOrientation);
 
+// ============ DEMO MODE (no AI) ============
+let demoMode = false;
+
+function enableDemoMode() {
+  demoMode = true;
+  poseDetector = null; // No AI
+  document.getElementById('loading').style.display = 'none';
+  setupUI();
+  requestWakeLock();
+  mainLoop(); // Will just show camera, no pose detection
+  checkOrientation();
+  setMode('shadow');
+  showToast('Modo Demo: câmera ativa, cues manuais nas configurações', 'success');
+}
+
+async function clearCacheAndReload() {
+  if ('caches' in window) {
+    const cacheNames = await caches.keys();
+    await Promise.all(cacheNames.map(name => caches.delete(name)));
+  }
+  if ('serviceWorker' in navigator) {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map(reg => reg.unregister()));
+  }
+  location.reload();
+}
+
 // ============ INIT ============
 async function init() {
   const loadingText = document.getElementById('loading-text');
+  const skipBtn = document.getElementById('btn-skip-ai');
+  const retryBtn = document.getElementById('btn-retry-load');
+  const clearCacheBtn = document.getElementById('btn-clear-cache');
+
+  // Show skip button after 15s
+  setTimeout(() => {
+    if (document.getElementById('loading').style.display !== 'none') {
+      skipBtn.style.display = 'block';
+      retryBtn.style.display = 'block';
+      clearCacheBtn.style.display = 'block';
+    }
+  }, 15000);
+
+  // Button handlers
+  skipBtn.addEventListener('click', enableDemoMode);
+  retryBtn.addEventListener('click', () => location.reload());
+  clearCacheBtn.addEventListener('click', clearCacheAndReload);
 
   try {
     // Load settings
@@ -1177,6 +1252,9 @@ async function init() {
   } catch (e) {
     console.error('Init error:', e);
     loadingText.textContent = 'Erro: ' + e.message;
+    skipBtn.style.display = 'block';
+    retryBtn.style.display = 'block';
+    clearCacheBtn.style.display = 'block';
     showToast('Erro ao inicializar: ' + e.message, 'error');
   }
 }
