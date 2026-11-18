@@ -3,8 +3,8 @@
  * Cache-first strategy for app shell, network-first for model assets
  */
 
-const CACHE_NAME = 'servecoach-v1';
-const MODEL_CACHE_NAME = 'servecoach-models-v1';
+const CACHE_NAME = 'servecoach-v4';
+const MODEL_CACHE_NAME = 'servecoach-models-v4';
 
 const APP_SHELL = [
   '/',
