@@ -7,7 +7,7 @@
 // ============ CONFIG & CONSTANTS ============
 const CONFIG = {
   // Pose model
-  modelComplexity: 1, // 0=lightning, 1=thunder, 2=full
+  modelComplexity: 0, // 0=lightning (FAST), 1=thunder, 2=full - DEFAULT TO FASTEST
   minDetectionConfidence: 0.5,
   minTrackingConfidence: 0.5,
 
@@ -34,6 +34,9 @@ const CONFIG = {
 
   // Wake lock
   wakeLockEnabled: true,
+
+  // Loading
+  loadTimeoutMs: 60000,      // timeout for model loading
 };
 
 // ============ STATE ============
@@ -716,38 +719,87 @@ async function flipCamera() {
 
 // ============ POSE DETECTOR INIT ============
 async function initPoseDetector() {
-  const {PoseDetector, FilesetResolver} = window;
+  const loadingText = document.getElementById('loading-text');
+  const startTime = Date.now();
 
-  if (!PoseDetector) {
-    // Load TensorFlow.js and MediaPipe
-    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
-    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.js');
+  async function tryLoadModel(complexity) {
+    const {PoseDetector, FilesetResolver} = window;
+
+    if (!PoseDetector) {
+      // Load TensorFlow.js and MediaPipe with timeout
+      loadingText.textContent = 'Baixando TensorFlow.js...';
+      await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js', 20000);
+      loadingText.textContent = 'Baixando MediaPipe...';
+      await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.js', 20000);
+    }
+
+    loadingText.textContent = 'Carregando modelo WASM...';
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
+    );
+
+    const modelNames = {
+      0: {file: 'pose_landmarker_lite.task', name: 'pose_landmarker_lite'},
+      1: {file: 'pose_landmarker_heavy.task', name: 'pose_landmarker_heavy'},
+      2: {file: 'pose_landmarker_full.task', name: 'pose_landmarker_full'},
+    };
+    const model = modelNames[complexity] || modelNames[0];
+
+    loadingText.textContent = `Baixando modelo ${model.name}... (${Math.round((Date.now()-startTime)/1000)}s)`;
+
+    poseDetector = await PoseDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${model.name}/float16/latest/${model.file}`,
+        delegate: 'GPU',
+      },
+      runningMode: 'VIDEO',
+      numPoses: 1,
+      minPoseDetectionConfidence: CONFIG.minDetectionConfidence,
+      minPosePresenceConfidence: CONFIG.minTrackingConfidence,
+      minTrackingConfidence: CONFIG.minTrackingConfidence,
+      outputSegmentationMasks: false,
+    });
+
+    return true;
   }
 
-  const vision = await FilesetResolver.forVisionTasks(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
-  );
-
-  const modelMap = {
-    lightning: 'pose_landmarker_lite.task',
-    thunder: 'pose_landmarker_heavy.task',
-    full: 'pose_landmarker_full.task',
-  };
-
-  poseDetector = await PoseDetector.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/${modelMap[CONFIG.modelComplexity === 0 ? 'lightning' : CONFIG.modelComplexity === 1 ? 'heavy' : 'full']}/float16/latest/pose_landmarker_${CONFIG.modelComplexity === 0 ? 'lite' : CONFIG.modelComplexity === 1 ? 'heavy' : 'full'}.task`,
-      delegate: 'GPU',
-    },
-    runningMode: 'VIDEO',
-    numPoses: 1,
-    minPoseDetectionConfidence: CONFIG.minDetectionConfidence,
-    minPosePresenceConfidence: CONFIG.minTrackingConfidence,
-    minTrackingConfidence: CONFIG.minTrackingConfidence,
-    outputSegmentationMasks: false,
-  });
+  // Try preferred model first, fallback to lightning if timeout
+  try {
+    await Promise.race([
+      tryLoadModel(CONFIG.modelComplexity),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Model load timeout')), CONFIG.loadTimeoutMs)
+      )
+    ]);
+  } catch (e) {
+    console.warn('Preferred model failed/timeout, falling back to lightning:', e.message);
+    loadingText.textContent = 'Modelo pesado demorou, carregando versão rápida...';
+    CONFIG.modelComplexity = 0; // Force lightning
+    document.getElementById('setting-model').value = 'lightning';
+    await tryLoadModel(0);
+  }
 
   return true;
+}
+
+function loadScriptWithTimeout(src, timeoutMs) {
+  return Promise.race([
+    loadScript(src),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout loading ${src}`)), timeoutMs)
+    )
+  ]);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
 }
 
 function loadScript(src) {
@@ -791,7 +843,8 @@ function loadSettings() {
 
   // Apply to UI
   document.getElementById('setting-camera').value = CONFIG.facingMode === 'user' ? 'front' : 'back';
-  document.getElementById('setting-model').value = CONFIG.modelComplexity === 0 ? 'lightning' : CONFIG.modelComplexity === 1 ? 'thunder' : 'full';
+  const modelMap = {0: 'lightning', 1: 'thunder', 2: 'full'};
+  document.getElementById('setting-model').value = modelMap[CONFIG.modelComplexity] || 'lightning';
   document.getElementById('setting-mirror').checked = CONFIG.mirrorVideo;
   document.getElementById('sens-elbow').value = CONFIG.thresholds.elbowMinTrophy;
   document.getElementById('val-elbow').textContent = CONFIG.thresholds.elbowMinTrophy + '°';
