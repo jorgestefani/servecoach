@@ -363,7 +363,7 @@ function enterPhase(newPhase) {
   currentPhase = newPhase;
   phaseStartTime = now;
 
-  if (newPhase === 0) serveStartTime = now;
+  if (newPhase === 0 || (newPhase === 1 && !serveStartTime)) serveStartTime = now;
 
   phaseHistory.push({
     phase: newPhase,
@@ -609,7 +609,7 @@ function updateMetricsUI(pose) {
   phaseEl.textContent = PHASES[currentPhase];
   elbowEl.textContent = pose.elbow !== null ? `${Math.round(pose.elbow)}°` : '—';
   pronationEl.textContent = pose.pronation !== null ? `${Math.round(pose.pronation)}°` : '—';
-  timeEl.textContent = currentPhase > 0 ? `${Date.now() - serveStartTime}ms` : '—';
+  timeEl.textContent = currentPhase > 0 && serveStartTime ? `${Date.now() - serveStartTime}ms` : '—';
 
   // Color coding
   if (pose.elbow !== null) {
@@ -645,7 +645,10 @@ async function mainLoop() {
 
   try {
     const poses = await poseDetector.estimatePoses(video, {flipHorizontal: false});
+    seloIA();
+    if (poses.novo === false) { animationId = requestAnimationFrame(mainLoop); return; }
 
+    if (poses.length === 0 && ctx && canvas.width) ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (poses.length > 0) {
       const landmarks = poses[0].keypoints;
 
@@ -671,7 +674,20 @@ async function mainLoop() {
   animationId = requestAnimationFrame(mainLoop);
 }
 
+// selo pequeno no topo com o estado da IA (substitui o aviso de modo demo)
+function seloIA() {
+  let el = document.getElementById('selo-ia');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'selo-ia';
+    el.style.cssText = 'position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 8px);transform:translateX(-50%);z-index:50;background:rgba(0,0,0,.6);color:#fff;font:600 12px system-ui;padding:4px 10px;border-radius:12px;pointer-events:none';
+    document.body.appendChild(el);
+  }
+  const t = demoMode ? '⚡ Sem IA (só avisos manuais)' : IA_STATUS ? IA_STATUS : poseDetector ? '🟢 IA ativa · ' + IA_INFO.fps + ' análises/s' + (IA_INFO.modo ? ' · ' + IA_INFO.modo : '') : '⏳ Carregando IA...';
+  if (el.textContent !== t) el.textContent = t;
+}
+
 function drawCameraOnly() {
+  seloIA();
   if (!ctx || !video.videoWidth) return;
 
   const w = canvas.width = video.videoWidth;
@@ -686,14 +702,6 @@ function drawCameraOnly() {
   }
 
   ctx.restore();
-  // estado da IA (sem espelhar o texto)
-  const rotulo = demoMode ? '⚡ MODO DEMO' : (IA_STATUS || '⏳ Carregando IA...');
-  ctx.font = 'bold 22px system-ui';
-  const lw = ctx.measureText(rotulo).width + 28;
-  ctx.fillStyle = 'rgba(255,200,0,0.92)';
-  ctx.fillRect(10, 10, lw, 40);
-  ctx.fillStyle = '#000';
-  ctx.fillText(rotulo, 24, 38);
 }
 
 // ============ CAMERA SETUP ============
@@ -750,9 +758,62 @@ async function flipCamera() {
 }
 
 // ============ POSE DETECTOR INIT ============
+const EH_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IA_INFO = {modo: '', ms: 0, fps: 0, quadros: 0, t0: performance.now()};
+
+// IA num worker: a tela nunca trava. Devolve true se deu certo.
+function iniciarWorker(nome) {
+  return new Promise((resolve, reject) => {
+    let w;
+    try { w = new Worker('pose-worker.js?v=8'); } catch (e) { return reject(e); }
+    const limite = setTimeout(() => { w.terminate(); reject(new Error('IA demorou demais para carregar')); }, 90000);
+    let ocupado = false, ultimo = [], novo = false, tsAnt = 0;
+    w.onerror = (e) => { clearTimeout(limite); reject(new Error(e.message || 'worker falhou')); };
+    w.onmessage = (e) => {
+      const d = e.data;
+      if (d.tipo === 'pronto') {
+        clearTimeout(limite);
+        IA_INFO.modo = d.modo + ' · fundo';
+        poseDetector = {
+          worker: w,
+          async estimatePoses(videoEl) {
+            if (!ocupado && videoEl.videoWidth) {
+              ocupado = true;
+              let ts = performance.now(); if (ts <= tsAnt) ts = tsAnt + 1; tsAnt = ts;
+              const escala = Math.min(1, 640 / videoEl.videoWidth);
+              const op = escala < 1 ? {resizeWidth: Math.round(videoEl.videoWidth * escala), resizeHeight: Math.round(videoEl.videoHeight * escala)} : undefined;
+              (op ? createImageBitmap(videoEl, op).catch(() => createImageBitmap(videoEl)) : createImageBitmap(videoEl))
+                .then(img => w.postMessage({tipo: 'quadro', img, ts}, [img]))
+                .catch(() => { ocupado = false; });
+            }
+            const r = ultimo; r.novo = novo; novo = false; return r;
+          },
+        };
+        resolve(true);
+      } else if (d.tipo === 'erro') {
+        clearTimeout(limite); w.terminate(); reject(new Error(d.msg));
+      } else if (d.tipo === 'pose') {
+        ocupado = false; novo = true;
+        ultimo = d.lm ? [{keypoints: d.lm}] : [];
+        IA_INFO.ms = d.ms || 0; IA_INFO.quadros++;
+        const agora = performance.now();
+        if (agora - IA_INFO.t0 > 1000) { IA_INFO.fps = Math.round(IA_INFO.quadros * 1000 / (agora - IA_INFO.t0)); IA_INFO.quadros = 0; IA_INFO.t0 = agora; }
+      }
+    };
+    w.postMessage({tipo: 'init', nome, conf: CONFIG.minDetectionConfidence, gpu: !EH_IOS});
+  });
+}
+
 async function initPoseDetector() {
   const loadingText = document.getElementById('loading-text');
   const startTime = Date.now();
+  const nomes = {0: 'pose_landmarker_lite', 1: 'pose_landmarker_heavy', 2: 'pose_landmarker_full'};
+  try {
+    await iniciarWorker(nomes[CONFIG.modelComplexity] || nomes[0]);
+    return true;
+  } catch (e) {
+    console.warn('IA em segundo plano falhou, tentando na tela principal:', e.message);
+  }
 
   async function tryLoadModel(complexity) {
     loadingText.textContent = 'Baixando MediaPipe...';
@@ -787,10 +848,12 @@ async function initPoseDetector() {
     });
     let landmarker;
     try {
+      if (EH_IOS) throw new Error('iPhone: CPU é mais estável');
       landmarker = await PoseLandmarker.createFromOptions(vision, opts('GPU'));
+      IA_INFO.modo = 'GPU';
     } catch (e) {
-      console.warn('GPU indisponível, usando CPU:', e.message);
       landmarker = await PoseLandmarker.createFromOptions(vision, opts('CPU'));
+      IA_INFO.modo = 'CPU';
     }
 
     // Adaptador: o resto do app espera estimatePoses() -> [{keypoints}]
@@ -1148,7 +1211,7 @@ function endSession() {
   document.getElementById('stat-serves').textContent = serveLog.length;
   document.getElementById('stat-good').textContent = serveLog.filter(s => s.isGood).length;
   document.getElementById('stat-cues').textContent = cueHistory.length;
-  document.getElementById('stat-duration').textContent = Math.round((Date.now() - serveStartTime) / 1000) + 's';
+  document.getElementById('stat-duration').textContent = (serveStartTime ? Math.round((Date.now() - serveStartTime) / 1000) : 0) + 's';
 
   document.getElementById('session-modal').classList.add('show');
 }
@@ -1207,6 +1270,9 @@ async function clearCacheAndReload() {
   location.reload();
 }
 
+window.addEventListener('error', (e) => { try { showToast('Erro: ' + (e.message || e), 'error'); } catch (_) {} });
+window.addEventListener('unhandledrejection', (e) => { try { showToast('Erro: ' + ((e.reason && e.reason.message) || e.reason), 'error'); } catch (_) {} });
+
 // ============ INIT ============
 // Nada bloqueia: a câmera abre já; a IA carrega por trás (com nova tentativa sozinha) e,
 // quando fica pronta, o esqueleto e as análises começam sem precisar recarregar.
@@ -1221,7 +1287,8 @@ function mostrarApp() {
   requestWakeLock();
   mainLoop();
   checkOrientation();
-  setMode('calibrate');
+  const bt = document.querySelector('.mode-btn[data-mode="shadow"]');
+  if (bt) bt.click(); else setMode('shadow');
 }
 
 async function carregarIA(tentativa = 1) {
