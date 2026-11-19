@@ -685,21 +685,22 @@ function drawCameraOnly() {
     ctx.scale(-1, 1);
   }
 
-  // Draw "Demo Mode" label
-  ctx.fillStyle = 'rgba(255,200,0,0.9)';
-  ctx.fillRect(10, 10, 200, 36);
-  ctx.fillStyle = '#000';
-  ctx.font = 'bold 16px system-ui';
-  ctx.fillText('⚡ MODO DEMO', 20, 35);
-
   ctx.restore();
+  // estado da IA (sem espelhar o texto)
+  const rotulo = demoMode ? '⚡ MODO DEMO' : (IA_STATUS || '⏳ Carregando IA...');
+  ctx.font = 'bold 22px system-ui';
+  const lw = ctx.measureText(rotulo).width + 28;
+  ctx.fillStyle = 'rgba(255,200,0,0.92)';
+  ctx.fillRect(10, 10, lw, 40);
+  ctx.fillStyle = '#000';
+  ctx.fillText(rotulo, 24, 38);
 }
 
 // ============ CAMERA SETUP ============
 async function setupCamera() {
   video = document.getElementById('video');
   canvas = document.getElementById('canvas');
-  ctx = canvas.getContext('2d', {alpha: false, desynchronized: true});
+  ctx = canvas.getContext('2d');
 
   const constraints = {
     video: {
@@ -729,7 +730,7 @@ async function setupCamera() {
     return true;
   } catch (e) {
     console.error('Camera error:', e);
-    showToast('Erro ao acessar câmera: ' + e.message, 'error');
+    window.ultimoErroCamera = e;
     return false;
   }
 }
@@ -902,40 +903,50 @@ function saveSettings() {
   } catch (e) {}
 }
 
-function saveToIndexedDB(storeName, data) {
-  if (!('indexedDB' in window)) return;
-  const request = indexedDB.open('ServeCoachDB', 1);
-  request.onupgradeneeded = (e) => {
-    const db = e.target.result;
-    if (!db.objectStoreNames.contains('serves')) db.createObjectStore('serves', {keyPath: 'timestamp'});
-    if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', {keyPath: 'key'});
-  };
-  request.onsuccess = (e) => {
-    const db = e.target.result;
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    if (Array.isArray(data)) {
-      data.forEach(item => store.put(item));
-    } else {
-      store.put({key: storeName, value: data});
-    }
-  };
-}
-
-function loadFromIndexedDB(storeName) {
+// Banco local. A versão 1 antiga era criada vazia (sem as áreas) e a leitura travava o app
+// em "Carregando modelos de IA..." — a versão 2 cria as áreas; qualquer erro só devolve null.
+function openDB() {
   return new Promise((resolve) => {
     if (!('indexedDB' in window)) return resolve(null);
-    const request = indexedDB.open('ServeCoachDB', 1);
-    request.onsuccess = (e) => {
-      const db = e.target.result;
-      const tx = db.transaction(storeName, 'readonly');
-      const store = tx.objectStore(storeName);
-      const getRequest = store.getAll();
-      getRequest.onsuccess = () => resolve(getRequest.result);
-      getRequest.onerror = () => resolve(null);
-    };
-    request.onerror = () => resolve(null);
+    let done = false;
+    const fim = (v) => { if (!done) { done = true; resolve(v); } };
+    setTimeout(() => fim(null), 2500);
+    try {
+      const request = indexedDB.open('ServeCoachDB', 2);
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('serves')) db.createObjectStore('serves', {keyPath: 'timestamp'});
+        if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', {keyPath: 'key'});
+      };
+      request.onsuccess = (e) => fim(e.target.result);
+      request.onerror = () => fim(null);
+      request.onblocked = () => fim(null);
+    } catch (e) { fim(null); }
   });
+}
+
+async function saveToIndexedDB(storeName, data) {
+  try {
+    const db = await openDB();
+    if (!db || !db.objectStoreNames.contains(storeName)) return;
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    if (Array.isArray(data)) data.forEach(item => store.put(item));
+    else store.put({key: storeName, value: data});
+  } catch (e) { console.warn('Não salvou no banco local:', e.message); }
+}
+
+async function loadFromIndexedDB(storeName) {
+  try {
+    const db = await openDB();
+    if (!db || !db.objectStoreNames.contains(storeName)) return null;
+    return await new Promise((resolve) => {
+      const r = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+      setTimeout(() => resolve(null), 2500);
+    });
+  } catch (e) { return null; }
 }
 
 // ============ EXPORT / IMPORT ============
@@ -1197,76 +1208,73 @@ async function clearCacheAndReload() {
 }
 
 // ============ INIT ============
-async function init() {
-  // Check for demo mode URL param (?demo=1)
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('demo') === '1') {
-    enableDemoMode();
-    return;
+// Nada bloqueia: a câmera abre já; a IA carrega por trás (com nova tentativa sozinha) e,
+// quando fica pronta, o esqueleto e as análises começam sem precisar recarregar.
+let IA_STATUS = '';
+let iniciado = false;
+
+function mostrarApp() {
+  if (iniciado) return;
+  iniciado = true;
+  document.getElementById('loading').style.display = 'none';
+  setupUI();
+  requestWakeLock();
+  mainLoop();
+  checkOrientation();
+  setMode('calibrate');
+}
+
+async function carregarIA(tentativa = 1) {
+  IA_STATUS = '⏳ Carregando IA' + (tentativa > 1 ? ` (tentativa ${tentativa})` : '') + '...';
+  try {
+    await initPoseDetector();
+    IA_STATUS = '';
+    showToast('IA pronta: posicione o corpo inteiro na tela', 'success');
+  } catch (e) {
+    console.error('IA não carregou:', e);
+    poseDetector = null;
+    IA_STATUS = '⚠️ Sem IA (internet?) — nova tentativa em 10 s';
+    setTimeout(() => carregarIA(tentativa + 1), 10000);
   }
+}
+
+function erroCamera(e) {
+  const t = document.getElementById('loading-text');
+  const negado = e && (e.name === 'NotAllowedError' || /denied|permission/i.test(e.message || ''));
+  t.innerHTML = negado
+    ? 'A câmera foi bloqueada.<br><small>No iPhone: Ajustes › Safari › Câmera › <b>Permitir</b> (ou toque em “aA” na barra de endereço › Ajustes do Site › Câmera). Depois toque em Tentar novamente.</small>'
+    : 'Não consegui abrir a câmera' + (e && e.message ? ': ' + e.message : '') + '.<br><small>Feche outros apps que usam a câmera e toque em Tentar novamente.</small>';
+  ['btn-retry-load', 'btn-skip-ai'].forEach(id => { const b = document.getElementById(id); if (b) b.style.display = 'block'; });
+}
+
+async function init() {
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('demo') === '1') { enableDemoMode(); return; }
 
   const loadingText = document.getElementById('loading-text');
   const skipBtn = document.getElementById('btn-skip-ai');
   const retryBtn = document.getElementById('btn-retry-load');
   const clearCacheBtn = document.getElementById('btn-clear-cache');
-
-  // Show skip button after 15s
-  setTimeout(() => {
-    if (document.getElementById('loading').style.display !== 'none') {
-      skipBtn.style.display = 'block';
-      retryBtn.style.display = 'block';
-      clearCacheBtn.style.display = 'block';
-    }
-  }, 15000);
-
-  // Button handlers
   skipBtn.addEventListener('click', enableDemoMode);
   retryBtn.addEventListener('click', () => location.reload());
   clearCacheBtn.addEventListener('click', clearCacheAndReload);
+  skipBtn.textContent = '📷 Abrir sem câmera/IA (só os avisos manuais)';
 
+  try { loadSettings(); } catch (e) { console.warn('Ajustes:', e); }
+
+  // saques salvos: em paralelo, nunca trava
+  loadFromIndexedDB('serves').then(s => { if (s) s.forEach(x => serveLog.push(x)); });
+
+  loadingText.textContent = 'Abrindo a câmera...';
+  let camErro = null;
   try {
-    // Load settings
-    loadSettings();
+    const ok = await setupCamera();
+    if (!ok) camErro = window.ultimoErroCamera || new Error('câmera indisponível');
+  } catch (e) { camErro = e; }
+  if (camErro) { erroCamera(camErro); return; }
 
-    // Load saved serves
-    const savedServes = await loadFromIndexedDB('serves');
-    if (savedServes) savedServes.forEach(s => serveLog.push(s));
-
-    loadingText.textContent = 'Iniciando câmera...';
-    const camOk = await setupCamera();
-    if (!camOk) throw new Error('Camera failed');
-
-    loadingText.textContent = 'Carregando modelo de IA...';
-    await initPoseDetector();
-
-    loadingText.textContent = 'Pronto!';
-
-    // Hide loading, show app
-    document.getElementById('loading').style.display = 'none';
-
-    // Setup UI
-    setupUI();
-
-    // Request wake lock
-    await requestWakeLock();
-
-    // Start main loop
-    mainLoop();
-
-    // Initial orientation check
-    checkOrientation();
-
-    // Default mode
-    setMode('calibrate');
-
-  } catch (e) {
-    console.error('Init error:', e);
-    loadingText.textContent = 'Erro: ' + e.message;
-    skipBtn.style.display = 'block';
-    retryBtn.style.display = 'block';
-    clearCacheBtn.style.display = 'block';
-    showToast('Erro ao inicializar: ' + e.message, 'error');
-  }
+  mostrarApp();          // já mostra a câmera
+  carregarIA();          // IA em segundo plano
 }
 
 // Handle visibility change
