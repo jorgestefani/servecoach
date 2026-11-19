@@ -235,8 +235,7 @@
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.85);
-      backdrop-filter: blur(8px);
+      background: rgba(0,0,0,0.78);
       z-index: 100;
       display: flex;
       align-items: center;
@@ -330,6 +329,9 @@
       :root { --border: currentColor; --shadow: none; }
       .btn { border-width: 2px; }
     }
+      /* Sem desfoque (backdrop-filter) sobre o vídeo: no iPhone isso travava a tela */
+    * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+    .modal-backdrop:not(.show) { visibility: hidden; }
   </style>
 </head>
 <body>
@@ -627,6 +629,6 @@
   </script>
 
   <!-- Main App Script -->
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=9"></script>
 </body>
 </html>

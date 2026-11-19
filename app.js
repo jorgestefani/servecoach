@@ -527,8 +527,9 @@ function logServe(serveData) {
 function drawPose(landmarks) {
   if (!ctx || !video.videoWidth) return;
 
-  const w = canvas.width = video.videoWidth;
-  const h = canvas.height = video.videoHeight;
+  const w = video.videoWidth, h = video.videoHeight;
+  if (canvas.width !== w) canvas.width = w;      // só redimensiona quando muda (recriar a cada quadro pesa no iPhone)
+  if (canvas.height !== h) canvas.height = h;
 
   ctx.clearRect(0, 0, w, h);
   ctx.save();
@@ -633,6 +634,12 @@ async function mainLoop() {
     return;
   }
 
+  // Janela aberta (calibração, sessão): a IA descansa para a tela responder na hora
+  if (document.querySelector('.modal-backdrop.show')) {
+    animationId = requestAnimationFrame(mainLoop);
+    return;
+  }
+
   // Demo mode: just show camera, no pose detection
   if (!poseDetector || demoMode) {
     drawCameraOnly();
@@ -687,8 +694,9 @@ function drawCameraOnly() {
   seloIA();
   if (!ctx || !video.videoWidth) return;
 
-  const w = canvas.width = video.videoWidth;
-  const h = canvas.height = video.videoHeight;
+  const w = video.videoWidth, h = video.videoHeight;
+  if (canvas.width !== w) canvas.width = w;      // só redimensiona quando muda (recriar a cada quadro pesa no iPhone)
+  if (canvas.height !== h) canvas.height = h;
 
   ctx.clearRect(0, 0, w, h);
   ctx.save();
@@ -1282,6 +1290,7 @@ function setMode(mode) {
   updatePhaseUI();
   document.getElementById('cue-banner').classList.add('hidden');
 
+  document.querySelectorAll('.mode-btn').forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle('active', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
   montarRevisar();
   document.getElementById('rev-painel').style.display = mode === 'review' ? 'block' : 'none';
   if (mode !== 'review' && REV.ativo) voltarCamera();
