@@ -360,6 +360,7 @@ function triggerCue(cueType, title, desc) {
 
 function enterPhase(newPhase) {
   const now = Date.now();
+  if (newPhase > 0) marcarFase(newPhase);
   currentPhase = newPhase;
   phaseStartTime = now;
 
@@ -532,11 +533,7 @@ function drawPose(landmarks) {
   ctx.clearRect(0, 0, w, h);
   ctx.save();
 
-  // Mirror to match video display
-  if (CONFIG.mirrorVideo) {
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
+  // espelho: feito no CSS para o vídeo e o desenho juntos (aplicarEspelho)
 
   // Draw connections
   const connections = [
@@ -663,7 +660,7 @@ async function mainLoop() {
 
       // State machine (only in training modes)
       const mode = document.querySelector('.mode-btn.active')?.dataset?.mode;
-      if (mode === 'shadow' || mode === 'calibrate') {
+      if (mode === 'shadow' || mode === 'calibrate' || (mode === 'review' && REV.ativo)) {
         checkPhaseTransitions(pose);
       }
     }
@@ -696,12 +693,117 @@ function drawCameraOnly() {
   ctx.clearRect(0, 0, w, h);
   ctx.save();
 
-  if (CONFIG.mirrorVideo) {
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
-
   ctx.restore();
+}
+
+// ============ ESPELHO ============
+function aplicarEspelho() {
+  const t = (CONFIG.mirrorVideo && !REV.ativo) ? 'scaleX(-1)' : 'none';
+  if (video) video.style.transform = t;
+  if (canvas) canvas.style.transform = t;
+}
+
+// ============ REVISAR: vídeo gravado em câmera lenta ============
+const REV = {ativo: false, url: null, marcas: [], vel: 0.25};
+const fmtT = (x) => (Math.round(x * 100) / 100).toFixed(2).replace('.', ',') + ' s';
+
+function montarRevisar() {
+  if (document.getElementById('rev-painel')) return;
+  const p = document.createElement('div'); p.id = 'rev-painel';
+  p.innerHTML = `
+    <div class="rev-top">
+      <label class="btn primary" id="rev-carregar">📂 Carregar vídeo do saque<input type="file" id="rev-arq" accept="video/*" hidden></label>
+      <button class="btn" id="rev-camera" style="display:none">📷 Voltar à câmera</button>
+    </div>
+    <div id="rev-dica" class="rev-dica">Escolha um vídeo do saque (da galeria ou grave agora). Ele roda em câmera lenta com o esqueleto e as medidas.</div>
+    <div id="rev-ctl" style="display:none">
+      <input type="range" id="rev-barra" min="0" max="1000" value="0" aria-label="Posição no vídeo">
+      <div class="rev-linha">
+        <button class="btn" id="rev-voltar" aria-label="Quadro anterior">⏮</button>
+        <button class="btn primary" id="rev-play" aria-label="Tocar ou pausar">⏸</button>
+        <button class="btn" id="rev-avancar" aria-label="Próximo quadro">⏭</button>
+        <select id="rev-vel" aria-label="Velocidade"><option value="0.1">0,1×</option><option value="0.25" selected>0,25×</option><option value="0.5">0,5×</option><option value="1">1×</option></select>
+        <span id="rev-tempo" class="rev-tempo">0,00 s</span>
+      </div>
+      <div id="rev-marcas" class="rev-marcas"></div>
+    </div>`;
+  document.body.appendChild(p);
+  const css = document.createElement('style');
+  css.textContent = `#rev-painel{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top) + 46px);z-index:40;background:rgba(13,17,23,.88);border:1px solid rgba(255,255,255,.15);border-radius:14px;padding:10px;display:none;color:#fff;max-width:620px;margin:0 auto}
+  #rev-painel .rev-top{display:flex;gap:8px}#rev-painel .rev-top .btn{flex:1;text-align:center;cursor:pointer}
+  #rev-painel .rev-dica{font-size:13px;opacity:.8;margin-top:6px}
+  #rev-painel input[type=range]{width:100%;margin:10px 0 6px}
+  #rev-painel .rev-linha{display:flex;gap:6px;align-items:center}#rev-painel .rev-linha .btn{min-width:44px;padding:8px 10px}
+  #rev-painel select{background:#161b22;color:#fff;border:1px solid #30363d;border-radius:8px;padding:8px}
+  #rev-painel .rev-tempo{margin-left:auto;font-variant-numeric:tabular-nums;font-size:14px}
+  #rev-painel .rev-marcas{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  #rev-painel .rev-marcas button{font-size:12px;padding:5px 9px;border-radius:12px;border:1px solid #3fb950;background:rgba(63,185,80,.15);color:#fff}`;
+  document.head.appendChild(css);
+  const $ = (id) => document.getElementById(id);
+  $('rev-arq').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) abrirVideo(f); e.target.value = ''; });
+  $('rev-camera').addEventListener('click', voltarCamera);
+  $('rev-play').addEventListener('click', () => { if (video.paused) video.play(); else video.pause(); });
+  const passo = (d) => { video.pause(); video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + d)); };
+  $('rev-voltar').addEventListener('click', () => passo(-1 / 30));
+  $('rev-avancar').addEventListener('click', () => passo(1 / 30));
+  $('rev-vel').addEventListener('change', (e) => { REV.vel = +e.target.value; video.playbackRate = REV.vel; });
+  $('rev-barra').addEventListener('input', (e) => { video.pause(); if (video.duration) video.currentTime = video.duration * e.target.value / 1000; });
+}
+
+function atualizarRevUI() {
+  const $ = (id) => document.getElementById(id);
+  if (!$('rev-painel') || !REV.ativo) return;
+  $('rev-play').textContent = video.paused ? '▶' : '⏸';
+  $('rev-tempo').textContent = fmtT(video.currentTime || 0) + ' / ' + fmtT(video.duration || 0);
+  if (video.duration && document.activeElement !== $('rev-barra')) $('rev-barra').value = Math.round(video.currentTime / video.duration * 1000);
+}
+
+function marcarFase(fase) {
+  if (!REV.ativo) return;
+  const t = video.currentTime;
+  if (REV.marcas.some(m => m.fase === fase && Math.abs(m.t - t) < 0.15)) return;
+  REV.marcas.push({fase, t});
+  REV.marcas.sort((a, b) => a.t - b.t);
+  const el = document.getElementById('rev-marcas');
+  el.innerHTML = '<span style="font-size:12px;opacity:.75;width:100%">Fases encontradas (toque para ir):</span>' +
+    REV.marcas.map((m, i) => `<button data-i="${i}">${PHASES[m.fase]} · ${fmtT(m.t)}</button>`).join('');
+  el.querySelectorAll('button').forEach(b => b.onclick = () => { video.pause(); video.currentTime = REV.marcas[+b.dataset.i].t; });
+}
+
+async function abrirVideo(arquivo) {
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
+  if (REV.url) URL.revokeObjectURL(REV.url);
+  REV.url = URL.createObjectURL(arquivo);
+  REV.ativo = true; REV.marcas = [];
+  document.getElementById('rev-marcas').innerHTML = '';
+  aplicarEspelho();
+  video.style.objectFit = canvas.style.objectFit = 'contain';   // vídeo inteiro, sem cortar o corpo
+  video.muted = true; video.loop = false; video.playsInline = true;
+  video.src = REV.url;
+  video.onloadedmetadata = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight; };
+  video.ontimeupdate = atualizarRevUI; video.onplay = atualizarRevUI; video.onpause = atualizarRevUI;
+  video.onended = () => { atualizarRevUI(); showToast(REV.marcas.length ? 'Fim do vídeo: toque nas fases para rever' : 'Fim do vídeo. Nenhuma fase completa encontrada; confira se o corpo inteiro aparece.', 'info'); };
+  setMode('review');
+  try { await video.play(); } catch (e) { /* iPhone pode pedir toque no ▶ */ }
+  video.playbackRate = REV.vel;
+  document.getElementById('rev-ctl').style.display = 'block';
+  document.getElementById('rev-camera').style.display = 'block';
+  document.getElementById('rev-dica').textContent = 'Câmera lenta: use ⏮ ⏭ para ir quadro a quadro. As fases aparecem abaixo quando o app as reconhece.';
+  showToast('Vídeo carregado: analisando em câmera lenta', 'success');
+}
+
+async function voltarCamera() {
+  if (!REV.ativo) return;
+  REV.ativo = false;
+  video.pause(); video.removeAttribute('src'); video.load();
+  video.style.objectFit = canvas.style.objectFit = '';
+  video.ontimeupdate = video.onplay = video.onpause = video.onended = null;
+  if (REV.url) { URL.revokeObjectURL(REV.url); REV.url = null; }
+  document.getElementById('rev-ctl').style.display = 'none';
+  document.getElementById('rev-camera').style.display = 'none';
+  document.getElementById('rev-dica').textContent = 'Escolha um vídeo do saque (da galeria ou grave agora). Ele roda em câmera lenta com o esqueleto e as medidas.';
+  await setupCamera();
+  aplicarEspelho();
 }
 
 // ============ CAMERA SETUP ============
@@ -734,6 +836,7 @@ async function setupCamera() {
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    aplicarEspelho();
 
     return true;
   } catch (e) {
@@ -1097,6 +1200,7 @@ function setupUI() {
 
   document.getElementById('setting-mirror').addEventListener('change', (e) => {
     CONFIG.mirrorVideo = e.target.checked;
+    aplicarEspelho();
     saveSettings();
   });
 
@@ -1177,6 +1281,10 @@ function setMode(mode) {
   angleBuffers.racketHeight.length = 0;
   updatePhaseUI();
   document.getElementById('cue-banner').classList.add('hidden');
+
+  montarRevisar();
+  document.getElementById('rev-painel').style.display = mode === 'review' ? 'block' : 'none';
+  if (mode !== 'review' && REV.ativo) voltarCamera();
 
   if (mode === 'calibrate') {
     calibrationState = {count: 0, target: 3, serves: []};
